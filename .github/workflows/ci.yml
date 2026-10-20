@@ -9,8 +9,8 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
-    branches-ignore: [main]   # main is handled by deploy.yml (which also runs CI checks)
+    # deploy.yml already runs these same checks on main; this covers everything else
+    branches-ignore: [main]
   pull_request:
     branches: [main]
 
