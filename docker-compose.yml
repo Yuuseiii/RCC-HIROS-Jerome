@@ -73,7 +73,11 @@ services:
 
   # ── Cloudflare Tunnel ──────────────────────────────────────
   # Default: quick tunnel (no Cloudflare account needed) → random *.trycloudflare.com URL
-  # For a STABLE hostname, set TUNNEL_TOKEN in .env (named tunnel from the CF dashboard).
+  # NOTE: the cloudflared image is scratch-based (no shell), so `command`
+  # must be plain exec-form args — no sh -c conditionals.
+  # For a STABLE hostname, create a named tunnel in the Cloudflare Zero
+  # Trust dashboard, put its token in .env (TUNNEL_TOKEN), and swap the
+  # command below to:  ["tunnel", "--no-autoupdate", "run"]
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -82,12 +86,7 @@ services:
         condition: service_healthy
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
-    command: >
-      sh -c 'if [ -n "$$TUNNEL_TOKEN" ]; then
-               tunnel --no-autoupdate run
-             else
-               tunnel --no-autoupdate --url http://app:3000
-             fi'
+    command: ["tunnel", "--no-autoupdate", "--url", "http://app:3000"]
     networks: [rcc]
 
 volumes:

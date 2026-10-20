@@ -2,7 +2,7 @@
 
 **Author:** Jerome (Yuuseiii) · **Date:** October 2026
 **Application:** RCC-HIROS — Human Resource & Inventory Operations System
-**Live URL:** *(filled in after first deploy — see §5)*
+**Live URL:** https://moral-throwing-suggested-carry.trycloudflare.com *(Cloudflare quick tunnel — see §5 for making it a permanent hostname)*
 **CI/CD config:** [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) · [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)
 
 ---
