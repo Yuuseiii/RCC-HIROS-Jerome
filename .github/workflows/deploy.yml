@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════
+# RCC-HIROS — Continuous Deployment
+# Triggered on every push/merge to `main`:
+#   1. CI checks (lint, type-check, build) on a cloud runner —
+#      a failing check blocks the deploy.
+#   2. Deploy job on the self-hosted runner (the deployment host):
+#      rebuilds the Docker images and restarts the compose stack.
+#      Prisma schema is pushed automatically by the `migrate`
+#      service; the app is verified via /api/health.
+# ═══════════════════════════════════════════════════════════════
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # never kill a deployment mid-flight
+
+jobs:
+  # ── Gate: same checks as ci.yml must pass before deploying ──
+  checks:
+    name: Pre-deploy checks
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "mysql://placeholder:placeholder@localhost:3306/rcc_hiros"
+      JWT_SECRET: "ci-build-placeholder"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+  # ── Deploy: rebuild + restart the container stack ──────────
+  deploy:
+    name: Deploy to production host
+    needs: checks                 # only deploy if checks passed
+    runs-on: [self-hosted]        # the machine running docker compose
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The runner does a fresh checkout, and .env is gitignored — so the
+      # secrets file must be provisioned on the host (outside the repo)
+      # and copied into the workspace before compose interpolates it.
+      # Configure the repository variable SECRET_ENV_PATH accordingly,
+      # e.g. C:\rcc-hiros-secrets\.env
+      - name: Provide secrets (.env)
+        shell: bash
+        run: |
+          if [ ! -f ".env" ]; then
+            if [ -n "${{ vars.SECRET_ENV_PATH }}" ] && [ -f "${{ vars.SECRET_ENV_PATH }}" ]; then
+              cp "${{ vars.SECRET_ENV_PATH }}" .env
+              echo "Copied .env from ${{ vars.SECRET_ENV_PATH }}"
+            else
+              echo "❌ No .env in workspace and SECRET_ENV_PATH repo variable is not set."
+              echo "   Copy the project .env to a fixed path on the host and set the"
+              echo "   SECRET_ENV_PATH repository variable to that path."
+              exit 1
+            fi
+          fi
+
+      - name: Build images & restart stack
+        run: docker compose up -d --build --remove-orphans
+        env:
+          # Secrets are configured as runner-level env vars on the host (.env is
+          # read by docker compose automatically from the working directory)
+          COMPOSE_PROJECT_NAME: rcc-hiros
+
+      - name: Wait for app health (deploy verification)
+        shell: bash
+        run: |
+          echo "Waiting for the app to become healthy..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health > /dev/null 2>&1; then
+              echo "✅ Deploy verified — /api/health is OK"
+              curl -fsS http://127.0.0.1:3000/api/health
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ App did not become healthy in time"
+          docker compose logs --tail=50 app
+          exit 1
+
+      - name: Show tunnel URL
+        shell: bash
+        run: |
+          echo "Public URL (from the cloudflared quick tunnel):"
+          docker compose logs --tail=20 tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1 || docker compose logs --tail=5 tunnel

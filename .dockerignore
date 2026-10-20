@@ -1,0 +1,29 @@
+# Git & CI
+.git
+.github
+.gitignore
+
+# Dependencies & build output (regenerated inside the image)
+node_modules
+.next
+out
+build
+src/generated
+
+# Secrets & local data — never baked into the image
+.env
+.env.*
+!.env.example
+db
+uploads
+
+# Local dev tooling / docs
+*.log
+*.bat
+.vscode
+.idea
+DEPLOYMENT.md
+README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

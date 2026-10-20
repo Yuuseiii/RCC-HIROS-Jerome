@@ -1,0 +1,51 @@
+# ═══════════════════════════════════════════════════════════════
+# RCC-HIROS — Continuous Integration
+# Runs on every push and pull request: installs dependencies,
+# generates the Prisma client, lints, type-checks, and builds.
+# No deploy happens here — that's deploy.yml's job.
+# ═══════════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    branches-ignore: [main]   # main is handled by deploy.yml (which also runs CI checks)
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    name: Lint, type-check & build
+    runs-on: ubuntu-latest
+
+    env:
+      # Build-time placeholders; real secrets live on the deploy runner
+      DATABASE_URL: "mysql://placeholder:placeholder@localhost:3306/rcc_hiros"
+      JWT_SECRET: "ci-build-placeholder"
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Type-check (tsc)
+        run: npx tsc --noEmit
+
+      - name: Build (next build)
+        run: npm run build

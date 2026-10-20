@@ -1,0 +1,99 @@
+# ═══════════════════════════════════════════════════════════════
+# RCC-HIROS — Production compose stack
+#
+#   app      Next.js (standalone) on :3000 (loopback only)
+#   db       MariaDB with a persistent named volume
+#   migrate  one-shot `prisma db push` (runs before app starts)
+#   tunnel   cloudflared → public HTTPS URL without port forwarding
+#
+# Usage:   docker compose up -d --build
+# Logs:    docker compose logs -f tunnel   ← prints the live URL
+# ═══════════════════════════════════════════════════════════════
+
+name: rcc-hiros
+
+services:
+  # ── Database ───────────────────────────────────────────────
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: rcc_hiros
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [rcc]
+
+  # ── Schema migration (one-shot, must finish before app starts) ──
+  migrate:
+    build:
+      context: .
+      target: migrate
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql://root:${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}@db:3306/rcc_hiros
+    command: ["npx", "prisma", "db", "push", "--skip-generate"]
+    restart: "no"
+    networks: [rcc]
+
+  # ── Application ────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql://root:${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}@db:3306/rcc_hiros
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      NEXT_PUBLIC_KIOSK_SERVICE_URL: ${NEXT_PUBLIC_KIOSK_SERVICE_URL:-http://127.0.0.1:8765}
+    ports:
+      - "127.0.0.1:3000:3000"   # loopback only — public traffic arrives via the tunnel
+    volumes:
+      - uploads:/app/uploads    # employee photos & leave documents survive rebuilds
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [rcc]
+
+  # ── Cloudflare Tunnel ──────────────────────────────────────
+  # Default: quick tunnel (no Cloudflare account needed) → random *.trycloudflare.com URL
+  # For a STABLE hostname, set TUNNEL_TOKEN in .env (named tunnel from the CF dashboard).
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    command: >
+      sh -c 'if [ -n "$$TUNNEL_TOKEN" ]; then
+               tunnel --no-autoupdate run
+             else
+               tunnel --no-autoupdate --url http://app:3000
+             fi'
+    networks: [rcc]
+
+volumes:
+  db-data:
+  uploads:
+
+networks:
+  rcc:
+    driver: bridge
