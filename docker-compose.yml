@@ -40,7 +40,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: mysql://root:${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env}@db:3306/rcc_hiros
-    command: ["npx", "prisma", "db", "push", "--skip-generate"]
+    command: ["npx", "prisma", "db", "push"]
     restart: "no"
     networks: [rcc]
 

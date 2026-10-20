@@ -49,6 +49,11 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on every route except Next.js internals & static assets.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  // Run on every route except Next.js internals, static assets,
+  // and /api/health (Docker HEALTHCHECK probes the container directly
+  // over plain HTTP — TLS terminates at the Cloudflare tunnel, so the
+  // HTTPS redirect would loop the probe forever).
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|api/health|.*\\..*).*)",
+  ],
 };
