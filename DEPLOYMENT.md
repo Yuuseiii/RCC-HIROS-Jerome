@@ -146,27 +146,41 @@ docker compose logs -f tunnel    # prints the public https://…trycloudflare.co
 
 ## 6. Deployment Journey (Step-by-Step Log)
 
-The deployment was executed iteratively: each step was attempted, verified (or failed visibly), diagnosed, and fixed with a dedicated commit. Every fix below is traceable in the [commit history](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commits/main) and the [Actions run logs](https://github.com/Yuuseiii/RCC-HIROS-Jerome/actions).
+The deployment was executed iteratively: each step was attempted, verified (or failed visibly), diagnosed, and fixed with a dedicated commit. Every step below links to its **actual evidence** — the commit diff, the files involved, and the CI/CD run logs.
 
-### Step 1 — Environment refactor (`b9152a6`)
+### Step 1 — Environment refactor
+**Commit:** [`b9152a6`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/b9152a69473b301b98199874d49b086a1e3f1bb5) · **Files:** [`src/lib/db.ts`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/src/lib/db.ts) · [`src/app/api/health/route.ts`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/src/app/api/health/route.ts)
+
 Before containerizing, the database credentials hardcoded in `src/lib/db.ts` (`localhost`, empty password) were replaced with `DATABASE_URL` env-var parsing, and a `/api/health` liveness route was added. This decouples the app from any specific host — the same image runs anywhere.
 
-### Step 2 — Containerize & compose stack (`b9152a6`)
+### Step 2 — Containerize & compose stack
+**Commit:** [`b9152a6`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/b9152a69473b301b98199874d49b086a1e3f1bb5) · **Files:** [`Dockerfile`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/Dockerfile) · [`docker-compose.yml`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/docker-compose.yml) · [`.github/workflows/ci.yml`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/.github/workflows/ci.yml) · [`.github/workflows/deploy.yml`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/.github/workflows/deploy.yml)
+
 Multi-stage `Dockerfile` (deps → builder → migrate → runner on Next.js standalone output) plus a 4-service `docker-compose.yml` (MariaDB with persistent volume → one-shot Prisma migration → app with `uploads` volume → cloudflared tunnel). First `docker compose up -d --build` pulled base images and built successfully.
 
-### Step 3 — CI workflow validation (failed run → `04a44bf`)
-The first CI run **failed instantly (0 s)** — GitHub Actions rejects `branches` **and** `branches-ignore` on the same event. Diagnosed from the run's error log; fixed by using `branches-ignore` alone. Subsequent runs went green (`npm ci → prisma generate → lint → tsc → build`).
+### Step 3 — CI workflow validation (failed run → fix)
+**Failed run (raw log):** [actions/runs/39371118622](https://github.com/Yuuseiii/RCC-HIROS-Jerome/actions/runs/39371118622) ❌ · **Fix commit:** [`04a44bf`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/04a44bf73e27789d0be6474bf326b68a0399f6b8) ✅
 
-### Step 4 — Schema migration fix (`06374b9`)
+The first CI run **failed instantly (0 s)** — GitHub Actions rejects `branches` **and** `branches-ignore` on the same event. Diagnosed from the run's error log; fixed by using `branches-ignore` alone. Subsequent runs went green (`npm ci → prisma generate → lint → tsc → build` — see the green **Pre-deploy checks** job in [run/39371123693](https://github.com/Yuuseiii/RCC-HIROS-Jerome/actions/runs/39371123693)).
+
+### Step 4 — Schema migration fix
+**Commit:** [`06374b9`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/06374b91d146d85bfed1581e3b596963e7c05b45) · **File:** [`docker-compose.yml`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/docker-compose.yml) (migrate service)
+
 The `migrate` service exited with code 1. Its logs showed Prisma 7 removed the `db push --skip-generate` flag. Removed the flag; migration then completed (exit 0) and the schema was applied to the fresh MariaDB volume automatically.
 
-### Step 5 — Health probe vs. HTTPS redirect (`06374b9`)
+### Step 5 — Health probe vs. HTTPS redirect
+**Commit:** [`06374b9`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/06374b91d146d85bfed1581e3b596963e7c05b45) · **File:** [`src/middleware.ts`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/src/middleware.ts) (matcher)
+
 The app container built and started but was marked **unhealthy**. Diagnosis: `/api/health` returned `301 → https://…` because the production middleware redirects non-HTTPS requests — correct through the tunnel (which sets `x-forwarded-proto: https`), but the Docker HEALTHCHECK probes the container directly over plain HTTP, so it looped. Fix: excluded `api/health` from the middleware matcher; the probe then returned `200` and the container went healthy.
 
-### Step 6 — Tunnel command fix (`92ded3d`)
+### Step 6 — Tunnel command fix
+**Commit:** [`92ded3d`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/92ded3ddeb998dc4e75834a15fd858832c9d8de4) · **File:** [`docker-compose.yml`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/docker-compose.yml) (tunnel service)
+
 The `tunnel` service crash-looped with *"you need to explicitly pass the --url flag"*. Root cause: the official `cloudflare/cloudflared` image is **scratch-based (no shell)**, so the compose `command` using `sh -c 'if …'` never executed as a shell — cloudflared received the shell script as its arguments. Fix: replaced the conditional with a plain exec-form command, documented how to switch to a named tunnel.
 
 ### Step 7 — Seed & end-to-end verification
+**Commit:** [`4e22950`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commit/4e22950c65b1f14a6f4df1565ab06874aa195884) (journey log) · **Script:** [`prisma/seed.ts`](https://github.com/Yuuseiii/RCC-HIROS-Jerome/blob/main/prisma/seed.ts)
+
 The fresh database was seeded (`prisma/seed.ts`: roles, admin account, demo employees, leave-workflow samples). End-to-end verification through the public tunnel URL:
 - `GET /api/health` → `200 {"status":"ok",…}`
 - `GET /` (login UI) → `200`
