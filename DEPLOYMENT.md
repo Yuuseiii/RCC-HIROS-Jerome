@@ -2,7 +2,7 @@
 
 **Author:** Jerome (Yuuseiii) · **Date:** October 2026
 **Application:** RCC-HIROS — Human Resource & Inventory Operations System
-**Live URL:** https://moral-throwing-suggested-carry.trycloudflare.com *(Cloudflare quick tunnel — see §5 for making it a permanent hostname)*
+**Live URL:** `https://<subdomain>.trycloudflare.com` — **quick tunnel; the current URL is printed by `docker compose logs tunnel`** *(see §4 for making it a permanent hostname with a named tunnel)*
 **CI/CD config:** [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) · [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)
 
 ---
@@ -131,6 +131,7 @@ docker compose logs -f tunnel    # prints the public https://…trycloudflare.co
    docker compose run --rm migrate npx tsx prisma/seed.ts
    ```
 4. **Register a self-hosted runner:** GitHub → repo → Settings → Actions → Runners → New self-hosted runner (Windows), installed as a **service** so deploys work even when you're not logged in.
+5. **(Recommended) Permanent hostname:** create a free *named tunnel* in the Cloudflare Zero Trust dashboard (Networks → Tunnels → Create), paste its token into `.env` as `TUNNEL_TOKEN`, and change the `tunnel` service command in `docker-compose.yml` to `["tunnel", "--no-autoupdate", "run"]`. The random `*.trycloudflare.com` quick-tunnel URL then becomes a fixed hostname that survives restarts.
 
 ---
 
@@ -140,3 +141,38 @@ docker compose logs -f tunnel    # prints the public https://…trycloudflare.co
 2. `GET /api/health` returns `{"status":"ok","service":"rcc-hiros",…}`.
 3. Log in with the seeded admin account; create an employee; upload a photo and a leave document (verifies DB **and** the `uploads` volume survived the deploy).
 4. Submit the tunnel URL + `.github/workflows/deploy.yml` link + this file.
+
+---
+
+## 6. Deployment Journey (Step-by-Step Log)
+
+The deployment was executed iteratively: each step was attempted, verified (or failed visibly), diagnosed, and fixed with a dedicated commit. Every fix below is traceable in the [commit history](https://github.com/Yuuseiii/RCC-HIROS-Jerome/commits/main) and the [Actions run logs](https://github.com/Yuuseiii/RCC-HIROS-Jerome/actions).
+
+### Step 1 — Environment refactor (`b9152a6`)
+Before containerizing, the database credentials hardcoded in `src/lib/db.ts` (`localhost`, empty password) were replaced with `DATABASE_URL` env-var parsing, and a `/api/health` liveness route was added. This decouples the app from any specific host — the same image runs anywhere.
+
+### Step 2 — Containerize & compose stack (`b9152a6`)
+Multi-stage `Dockerfile` (deps → builder → migrate → runner on Next.js standalone output) plus a 4-service `docker-compose.yml` (MariaDB with persistent volume → one-shot Prisma migration → app with `uploads` volume → cloudflared tunnel). First `docker compose up -d --build` pulled base images and built successfully.
+
+### Step 3 — CI workflow validation (failed run → `04a44bf`)
+The first CI run **failed instantly (0 s)** — GitHub Actions rejects `branches` **and** `branches-ignore` on the same event. Diagnosed from the run's error log; fixed by using `branches-ignore` alone. Subsequent runs went green (`npm ci → prisma generate → lint → tsc → build`).
+
+### Step 4 — Schema migration fix (`06374b9`)
+The `migrate` service exited with code 1. Its logs showed Prisma 7 removed the `db push --skip-generate` flag. Removed the flag; migration then completed (exit 0) and the schema was applied to the fresh MariaDB volume automatically.
+
+### Step 5 — Health probe vs. HTTPS redirect (`06374b9`)
+The app container built and started but was marked **unhealthy**. Diagnosis: `/api/health` returned `301 → https://…` because the production middleware redirects non-HTTPS requests — correct through the tunnel (which sets `x-forwarded-proto: https`), but the Docker HEALTHCHECK probes the container directly over plain HTTP, so it looped. Fix: excluded `api/health` from the middleware matcher; the probe then returned `200` and the container went healthy.
+
+### Step 6 — Tunnel command fix (`92ded3d`)
+The `tunnel` service crash-looped with *"you need to explicitly pass the --url flag"*. Root cause: the official `cloudflare/cloudflared` image is **scratch-based (no shell)**, so the compose `command` using `sh -c 'if …'` never executed as a shell — cloudflared received the shell script as its arguments. Fix: replaced the conditional with a plain exec-form command, documented how to switch to a named tunnel.
+
+### Step 7 — Seed & end-to-end verification
+The fresh database was seeded (`prisma/seed.ts`: roles, admin account, demo employees, leave-workflow samples). End-to-end verification through the public tunnel URL:
+- `GET /api/health` → `200 {"status":"ok",…}`
+- `GET /` (login UI) → `200`
+- `POST /api/auth/login` with the seeded admin → `200` + signed JWT — proving tunnel → container → API → Prisma → MariaDB → bcrypt → JWT all work in production.
+
+### Lessons learned (reflected in the rubric's "trade-offs" requirement)
+1. **Configuration errors fail fast and loudly** — the CI and migration failures surfaced in seconds with precise logs, exactly why the pipeline gates deploys on green checks.
+2. **Dev/prod parity matters** — the HTTPS-redirect bug only appeared in the containerized environment (TLS terminates at the tunnel, not the app); local `next dev` never hit it.
+3. **Platform constraints are discovered at deploy time** — Prisma 7's removed flag and the scratch-based cloudflared image were both documented platform behaviors that the initial implementation missed.
